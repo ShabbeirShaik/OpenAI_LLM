@@ -1,0 +1,236 @@
+from typing import List
+
+import chainlit as cl
+from ctransformers import AutoModelForCausalLM
+
+
+def initialize_model(model_name: str):
+    """
+    Initialize the LLM model based on the specified model name.
+    This function sets the global model variable to the appropriate model.
+    """
+    if model_name == "llama2":
+        model = AutoModelForCausalLM.from_pretrained(
+            "TheBloke/Llama-2-7b-Chat-GGUF", model_file="llama-2-7b-chat.Q5_K_M.gguf"
+        )
+        cl.user_session.set("model", model)
+        return "Model is changed to Llama2."
+    elif model_name == "orca":
+        model = AutoModelForCausalLM.from_pretrained(
+            "zoltanctoth/orca_mini_3B-GGUF", model_file="orca-mini-3b.q4_0.gguf"
+        )
+        cl.user_session.set("model", model)
+        return "Model is changed to Orca."
+    else:
+        return "Requested model not found. Keeping the current model."
+
+
+def get_prompt(instruction: str, history: List[str]):
+    """
+    Generate a prompt for the model based on the user's instruction and the conversation history.
+    """
+    system_description = (
+        "I'm an AI assistant designed to provide helpful and concise answers."
+    )
+    prompt = f"System:\n{system_description}\n\nUser:\n"
+    if len(history) > 0:
+        prompt += f"This is the conversation history: {''.join(history)}. Now answer the question: "
+    prompt += f"{instruction}\n\nResponse:\n"
+    return prompt
+
+
+@cl.on_message
+async def on_message(message: cl.Message):
+    """
+    Handle incoming messages. Special instructions for changing the model or forgetting the conversation
+    history are processed here. Otherwise, generate a response based on the current model and the provided instruction.
+    """
+    if message.content.lower() == "forget everything":
+        cl.user_session.set("history", [])
+        await cl.Message("Uh oh, I've just forgotten our conversation history").send()
+        return
+
+    if message.content.lower() in ["use llama2", "use orca"]:
+        model_name = message.content.split()[1]
+        response = initialize_model(model_name.lower())
+        await cl.Message(response).send()
+        return
+
+    history = cl.user_session.get("history", [])
+    msg = cl.Message(content="")
+    await msg.send()
+
+    prompt = get_prompt(message.content, history)
+    answer = ""
+    model = cl.user_session.get("model")
+    for word in model(prompt, stream=True):
+        await msg.stream_token(word)
+        answer += word
+    history.append(answer)
+    await msg.update()
+
+
+@cl.on_chat_start
+async def on_chat_start():
+    """
+    Perform initial setup when the chat session starts. This includes setting the initial model and clearing any existing conversation history.
+    """
+    await cl.Message("Loading model Orca...").send()
+    initialize_model("orca")
+    cl.user_session.set("history", [])
+
+    await cl.Message("Model initialized. How can I help you?").send()
+
+
+
+@cl.on_message
+async def on_message(message: cl.Message):
+    msg = cl.Message(content="")
+    await msg.send()
+    history = cl.user_session.get('message_history')
+    if message.content == 'forget everything':
+        history.clear()
+        await cl.Message(content='Uh oh, I\'ve just forgotten our conversation history').send()
+        return
+
+    prompt = get_prompt(message.content, history)
+    answer = ""
+    for word in llm(prompt, stream=True):
+        await msg.stream_token(word)
+        answer += word
+    history.append(answer)
+    await msg.update()
+
+
+# Imports
+from ctransformers import AutoModelForCausalLM
+# This class helps us work with llms for text completion
+
+import chainlit as cl
+###############################################
+
+
+def get_prompt(instruction: str, model: str = "orca", history: list[str] = None) -> str:
+    '''
+    Initialize model prompt with system instruction, and user question
+    '''
+
+    # Initialize empty prompt
+    prompt = ""
+
+    # Llama specific prompt creation
+    if model == "llama2":
+        # 
+        system = f"""[INST] <<SYS>>You are a helpful, respectful and honest assistant. """
+        system += f"""Always answer as helpfully as possible, while being safe. """
+        system += f"""Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. """
+
+        system += " <</SYS>>\n"""
+
+        prompt = system
+
+    # Orca will be default
+    else:
+        # 
+        system = f"""You are an AI assistant that gives helpful answers.
+        You answer the questions in the shortest and most concise way possible."""
+
+        # Orca-specific prompt
+        prompt = f"### System:\n{system}\n\n### User:\n"
+    
+    if history:
+        prompt += f"""This is the conversation history:\n"""
+        prompt += "\n\n".join(history)
+
+
+    # llama
+    if model == "llama2":
+        prompt += f"""\n{instruction} [/INST]"""
+    # orca
+    else:
+        prompt += f"\n{instruction}\n\n### Response:\n"   
+
+    return prompt
+
+# Initialization function for chat
+@cl.on_chat_start
+def on_chat_start():
+    global models
+    global current_model
+    global model_msgs
+    global model_name
+
+    # Initialize orca
+    orca = AutoModelForCausalLM.from_pretrained(
+        "zoltanctoth/orca_mini_3B-GGUF", # repo id
+        model_file="orca-mini-3b.q4_0.gguf" # the model file from the repo
+    )
+    models["orca"] = orca
+
+    # Initialize llama
+    llama = AutoModelForCausalLM.from_pretrained(
+        "TheBloke/Llama-2-7B-Chat-GGUF", # repo name
+        model_file = "llama-2-7b-chat.Q4_K_M.gguf", # the model file from the repo
+        model_type = "llama"
+    )
+    models["llama2"] = llama
+
+    # Default starting model is orca
+    current_model = models["orca"]
+
+    # Create messages for model changes
+    model_msgs = ["use " + model for model in models]
+
+    # Default model will be orca
+    model_name = "orca"
+
+    # Initialize user session "message_history" key
+    cl.user_session.set("message_history", [])
+
+# Chainlit message handling
+@cl.on_message
+async def on_message(message: cl.Message):
+    global model_name
+    global current_model
+
+    # Special message cases
+
+    # 1. Forget history
+    if (message.content.lower() == "forget history"):
+        cl.user_session.set("message_history", [])
+        response = "Uh oh, I've just forgotten our conversation history"
+        await cl.Message(response).send()
+
+    # 2. Change model
+    elif (message.content.lower() in model_msgs):
+        model_name = message.content.lower().split(" ")[-1].strip()
+        current_model = models[model_name]
+        response = f"Model changed to {model_name}"
+        await cl.Message(response).send()
+          
+    # Default case: respond to user
+    else:
+        # Get user session message history
+        message_history = cl.user_session.get("message_history")
+        # To be able to stream in chainlit, first create an empty message...
+        msg = cl.Message(content="")
+        response = ""
+
+        # ...then send the message to the user
+        await msg.send()
+        prompt = get_prompt(message.content, model_name, message_history)
+        for word in current_model(prompt, stream=True):
+            response += word
+            await msg.stream_token(word)
+        # Conclude the sending of messages
+        message_history.append(message.content.strip())
+        message_history.append(response.strip())
+        await msg.update()
+
+###############################################
+# Global Variables
+models = {}
+model_msgs = None
+model_name = None
+current_model = None
+###############################################
